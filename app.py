@@ -56,15 +56,6 @@ def load_anomalies_data():
     NOTA: En producción, reemplazar con la salida directa del detector.
     """
     try:
-        # Intentar cargar desde diferentes ubicaciones posibles
-        paths = [
-            'pipeline/results/anomalies_detected_20251202_124025.csv',
-            'pipeline/results/anomalies_detected_*.csv',
-            'results/anomalies_detected_*.csv',
-            'anomalies_detected.csv'
-        ]
-        
-        df = None
         from pathlib import Path
         import glob
         
@@ -80,6 +71,8 @@ def load_anomalies_data():
                 latest_file = max(files, key=lambda x: Path(x).stat().st_mtime)
                 df = pd.read_csv(latest_file)
                 break
+        else:
+            df = None
         
         if df is None:
             st.warning("No se encontró archivo de anomalías. Usando datos de ejemplo.")
@@ -103,7 +96,7 @@ def load_anomalies_data():
             df['is_anomaly'] = (df['outside_interval'] | df['high_residual']).astype(int)
         
         df['ds'] = pd.to_datetime(df['ds'])
-        df = df.sort_values('ds').reset_index(drop=True)
+        df = df.sort_values(['variable', 'ds']).reset_index(drop=True)
         return df
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
@@ -125,64 +118,113 @@ def load_model_metrics():
         return None
 
 
-def get_current_status(df):
-    """Obtiene el estado actual del sistema (últimas anomalías)."""
-    if len(df) == 0:
+def detect_persistent_anomalies(df, threshold_hours=1):
+    """
+    Detecta anomalías que persisten por más de threshold_hours.
+    Retorna DataFrame con variables que requieren revisión.
+    """
+    df_anomalies = df[df['is_anomaly'] == 1].copy()
+    
+    if len(df_anomalies) == 0:
+        return pd.DataFrame()
+    
+    persistent_vars = []
+    
+    # Agrupar por variable
+    for variable in df_anomalies['variable'].unique():
+        df_var = df_anomalies[df_anomalies['variable'] == variable].sort_values('ds')
+        
+        # Encontrar grupos consecutivos de anomalías
+        df_var['group'] = (df_var['ds'].diff() > timedelta(hours=threshold_hours)).cumsum()
+        
+        # Calcular duración de cada grupo
+        for group_id in df_var['group'].unique():
+            group = df_var[df_var['group'] == group_id]
+            duration = (group['ds'].max() - group['ds'].min()).total_seconds() / 3600
+            
+            if duration >= threshold_hours:
+                persistent_vars.append({
+                    'variable': variable,
+                    'inicio': group['ds'].min(),
+                    'fin': group['ds'].max(),
+                    'duracion_horas': duration,
+                    'n_anomalias': len(group),
+                    'score_promedio': group['anomaly_score'].mean(),
+                    'score_maximo': group['anomaly_score'].max()
+                })
+    
+    return pd.DataFrame(persistent_vars)
+
+
+def get_variables_to_review(df):
+    """
+    Identifica variables que requieren revisión basado en:
+    1. Anomalías persistentes (1 hora)
+    2. Variables con más anomalías recientes (últimas 24h)
+    """
+    ultimo_ts = df['ds'].max()
+    cutoff_24h = ultimo_ts - timedelta(hours=24)
+    df_recent = df[df['ds'] >= cutoff_24h]
+    
+    # 1. Anomalías persistentes
+    persistent = detect_persistent_anomalies(df_recent, threshold_hours=1)
+    
+    # 2. Variables con más anomalías recientes
+    anomalies_by_var = df_recent[df_recent['is_anomaly'] == 1].groupby('variable').agg({
+        'is_anomaly': 'count',
+        'anomaly_score': ['mean', 'max']
+    }).reset_index()
+    anomalies_by_var.columns = ['variable', 'n_anomalias', 'score_promedio', 'score_maximo']
+    anomalies_by_var = anomalies_by_var.sort_values('n_anomalias', ascending=False)
+    
+    # Combinar información
+    review_vars = []
+    
+    # Variables con anomalías persistentes (prioridad alta)
+    if len(persistent) > 0:
+        for _, row in persistent.iterrows():
+            review_vars.append({
+                'variable': row['variable'],
+                'razon': 'Anomalía persistente',
+                'prioridad': 'ALTA',
+                'detalle': f"Persiste desde {row['inicio'].strftime('%H:%M')} ({row['duracion_horas']:.1f}h)",
+                'n_anomalias': row['n_anomalias'],
+                'score_maximo': row['score_maximo']
+            })
+    
+    # Variables con muchas anomalías recientes (prioridad media)
+    top_vars = anomalies_by_var.head(10)
+    for _, row in top_vars.iterrows():
+        # Solo agregar si no está ya en la lista por persistencia
+        if row['variable'] not in [v['variable'] for v in review_vars]:
+            review_vars.append({
+                'variable': row['variable'],
+                'razon': 'Múltiples anomalías',
+                'prioridad': 'MEDIA',
+                'detalle': f"{row['n_anomalias']} anomalías en últimas 24h",
+                'n_anomalias': row['n_anomalias'],
+                'score_maximo': row['score_maximo']
+            })
+    
+    return pd.DataFrame(review_vars)
+
+
+def plot_anomaly_trend(df, variable, n_points=200):
+    """
+    Gráfico de tendencia con anomalías.
+    El intervalo de confianza está alrededor de la predicción (yhat).
+    """
+    if variable is None or variable == 'Todas':
         return None
     
-    # Último timestamp
-    ultimo_ts = df['ds'].max()
-    
-    # Anomalías en las últimas 2 horas
-    cutoff = ultimo_ts - timedelta(hours=2)
-    df_recent = df[df['ds'] >= cutoff]
-    
-    n_anomalies = df_recent['is_anomaly'].sum()
-    n_total = len(df_recent)
-    tasa = (n_anomalies / n_total * 100) if n_total > 0 else 0
-    
-    # Variables afectadas
-    variables_afectadas = df_recent[df_recent['is_anomaly'] == 1]['variable'].nunique()
-    
-    # Anomalía más reciente
-    ultima_anomalia = df[df['is_anomaly'] == 1].iloc[-1] if (df['is_anomaly'] == 1).any() else None
-    
-    return {
-        'ultimo_timestamp': ultimo_ts,
-        'anomalias_2h': n_anomalies,
-        'total_puntos_2h': n_total,
-        'tasa_anomalias': tasa,
-        'variables_afectadas': variables_afectadas,
-        'ultima_anomalia': ultima_anomalia,
-        'hay_anomalias_activas': n_anomalies > 0
-    }
-
-
-def plot_anomaly_trend(df, variable=None, n_points=200):
-    """Gráfico de tendencia con anomalías."""
-    # Filtrar por variable si se especifica
-    if variable:
-        df_plot = df[df['variable'] == variable].tail(n_points).copy()
-    else:
-        # Si no hay variable, tomar las últimas N muestras de todas las variables
-        df_plot = df.tail(n_points).copy()
+    df_plot = df[df['variable'] == variable].tail(n_points).copy()
     
     if len(df_plot) == 0:
         return None
     
-    # Si hay múltiples variables, agrupar por timestamp
-    if variable is None:
-        df_plot = df_plot.groupby('ds').agg({
-            'y': 'mean',
-            'yhat': 'mean',
-            'yhat_lower': 'mean',
-            'yhat_upper': 'mean',
-            'is_anomaly': 'sum'
-        }).reset_index()
-    
     fig = go.Figure()
     
-    # Intervalo de confianza
+    # Intervalo de confianza alrededor de yhat (predicción)
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
@@ -197,14 +239,14 @@ def plot_anomaly_trend(df, variable=None, n_points=200):
         x=df_plot['ds'],
         y=df_plot['yhat_lower'],
         mode='lines',
-        name='Intervalo de Confianza',
+        name='Intervalo de Confianza (95%)',
         fill='tonexty',
-        fillcolor='rgba(61, 205, 88, 0.1)',
+        fillcolor='rgba(61, 205, 88, 0.15)',
         line=dict(width=0),
         showlegend=True
     ))
     
-    # Valor predicho
+    # Valor predicho (centro del intervalo)
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat'],
@@ -224,12 +266,8 @@ def plot_anomaly_trend(df, variable=None, n_points=200):
         hovertemplate='%{x}<br>Real: %{y:.2f}<extra></extra>'
     ))
     
-    # Anomalías
-    if variable:
-        anomalias = df_plot[df_plot['is_anomaly'] == 1] if 'is_anomaly' in df_plot.columns else pd.DataFrame()
-    else:
-        # Para múltiples variables, marcar timestamps con anomalías
-        anomalias = df_plot[df_plot['is_anomaly'] > 0] if 'is_anomaly' in df_plot.columns else pd.DataFrame()
+    # Anomalías (valores reales fuera del intervalo)
+    anomalias = df_plot[df_plot['is_anomaly'] == 1]
     
     if len(anomalias) > 0:
         fig.add_trace(go.Scatter(
@@ -239,19 +277,21 @@ def plot_anomaly_trend(df, variable=None, n_points=200):
             name='Anomalías',
             marker=dict(
                 color='#DC143C',
-                size=10,
+                size=12,
                 symbol='x',
                 line=dict(width=2, color='white')
             ),
-            hovertemplate='%{x}<br>Anomalía: %{y:.2f}<extra></extra>'
+            hovertemplate='%{x}<br>Anomalía: %{y:.2f}<br>Score: %{customdata:.1f}<extra></extra>',
+            customdata=anomalias['anomaly_score']
         ))
     
     fig.update_layout(
+        title=f'Tendencia: {variable}',
         xaxis_title='Tiempo',
         yaxis_title='Valor',
         hovermode='x unified',
         template='plotly_white',
-        height=400,
+        height=450,
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -259,7 +299,7 @@ def plot_anomaly_trend(df, variable=None, n_points=200):
             xanchor="right",
             x=1
         ),
-        margin=dict(l=50, r=50, t=20, b=50),
+        margin=dict(l=50, r=50, t=60, b=50),
         plot_bgcolor='#FFFFFF',
         paper_bgcolor='#FFFFFF'
     )
@@ -278,15 +318,27 @@ def main():
     # Cargar métricas del modelo
     df_metrics = load_model_metrics()
     
+    # Obtener variables que requieren revisión
+    df_review = get_variables_to_review(df)
+    
     # Sidebar
     with st.sidebar:
         st.markdown("### Configuración")
         
-        # Selector de variable
+        # Selector de variable (priorizar las que requieren revisión)
         variables = sorted(df['variable'].unique()) if 'variable' in df.columns else []
+        
+        # Variables prioritarias primero
+        if len(df_review) > 0:
+            priority_vars = df_review['variable'].tolist()
+            other_vars = [v for v in variables if v not in priority_vars]
+            variables_sorted = priority_vars + other_vars
+        else:
+            variables_sorted = variables
+        
         variable_selected = st.selectbox(
             "Variable a visualizar",
-            options=['Todas'] + variables,
+            options=['Todas'] + variables_sorted,
             index=0
         )
         
@@ -306,12 +358,12 @@ def main():
             step=5
         )
     
-    # Obtener estado actual
-    estado = get_current_status(df)
-    
-    if estado is None:
-        st.error("No hay datos disponibles")
-        st.stop()
+    # Estado actual
+    ultimo_ts = df['ds'].max()
+    cutoff_2h = ultimo_ts - timedelta(hours=2)
+    df_recent_2h = df[df['ds'] >= cutoff_2h]
+    n_anomalies_2h = df_recent_2h['is_anomaly'].sum()
+    variables_afectadas = df_recent_2h[df_recent_2h['is_anomaly'] == 1]['variable'].nunique() if n_anomalies_2h > 0 else 0
     
     # ==========================================
     # SECCIÓN PRINCIPAL: ESTADO ACTUAL
@@ -320,11 +372,22 @@ def main():
     st.title("Sistema de Detección de Anomalías")
     st.markdown("---")
     
-    # Tarjeta de estado principal
+    # Alerta de anomalías persistentes
+    if len(df_review) > 0:
+        persistent_count = len(df_review[df_review['prioridad'] == 'ALTA'])
+        if persistent_count > 0:
+            st.markdown(f"""
+            <div style='background-color: #DC143C; color: white; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;'>
+                <h3 style='color: white; margin: 0;'>⚠️ ALERTA: {persistent_count} Variable(s) con Anomalías Persistentes (>1h)</h3>
+                <p style='margin: 0.5rem 0 0 0;'>Revisar sección "Variables que Requieren Revisión"</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Tarjetas de estado
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if estado['hay_anomalias_activas']:
+        if n_anomalies_2h > 0:
             st.markdown("""
             <div style='background-color: #DC143C; color: white; padding: 1.5rem; border-radius: 12px; text-align: center;'>
                 <h2 style='color: white; margin: 0; font-size: 2rem;'>ANOMALÍAS DETECTADAS</h2>
@@ -340,11 +403,12 @@ def main():
             """, unsafe_allow_html=True)
     
     with col2:
+        tasa = (n_anomalies_2h / len(df_recent_2h) * 100) if len(df_recent_2h) > 0 else 0
         st.markdown(f"""
         <div style='background-color: #FFFFFF; padding: 1.5rem; border-radius: 12px; border: 2px solid #E5E5E5; text-align: center;'>
             <div style='color: #333333; font-size: 0.9rem; margin-bottom: 0.5rem;'>ANOMALÍAS (2h)</div>
-            <div style='color: #DC143C; font-size: 3rem; font-weight: 700;'>{estado['anomalias_2h']}</div>
-            <div style='color: #666666; font-size: 0.8rem; margin-top: 0.5rem;'>Tasa: {estado['tasa_anomalias']:.2f}%</div>
+            <div style='color: #DC143C; font-size: 3rem; font-weight: 700;'>{n_anomalies_2h}</div>
+            <div style='color: #666666; font-size: 0.8rem; margin-top: 0.5rem;'>Tasa: {tasa:.2f}%</div>
         </div>
         """, unsafe_allow_html=True)
     
@@ -352,21 +416,20 @@ def main():
         st.markdown(f"""
         <div style='background-color: #FFFFFF; padding: 1.5rem; border-radius: 12px; border: 2px solid #E5E5E5; text-align: center;'>
             <div style='color: #333333; font-size: 0.9rem; margin-bottom: 0.5rem;'>VARIABLES AFECTADAS</div>
-            <div style='color: #2E9A42; font-size: 3rem; font-weight: 700;'>{estado['variables_afectadas']}</div>
+            <div style='color: #2E9A42; font-size: 3rem; font-weight: 700;'>{variables_afectadas}</div>
             <div style='color: #666666; font-size: 0.8rem; margin-top: 0.5rem;'>De {df['variable'].nunique()} totales</div>
         </div>
         """, unsafe_allow_html=True)
     
     with col4:
-        ultima_ts = estado['ultimo_timestamp']
         st.markdown(f"""
         <div style='background-color: #FFFFFF; padding: 1.5rem; border-radius: 12px; border: 2px solid #E5E5E5; text-align: center;'>
             <div style='color: #333333; font-size: 0.9rem; margin-bottom: 0.5rem;'>ÚLTIMA ACTUALIZACIÓN</div>
             <div style='color: #333333; font-size: 1.5rem; font-weight: 600; margin-top: 0.5rem;'>
-                {ultima_ts.strftime('%H:%M:%S')}
+                {ultimo_ts.strftime('%H:%M:%S')}
             </div>
             <div style='color: #666666; font-size: 0.8rem; margin-top: 0.5rem;'>
-                {ultima_ts.strftime('%d/%m/%Y')}
+                {ultimo_ts.strftime('%d/%m/%Y')}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -374,18 +437,65 @@ def main():
     st.markdown("---")
     
     # ==========================================
-    # GRÁFICO PRINCIPAL
+    # VARIABLES QUE REQUIEREN REVISIÓN
     # ==========================================
-    st.markdown("## Tendencias y Anomalías")
+    if len(df_review) > 0:
+        st.markdown("## ⚠️ Variables que Requieren Revisión")
+        
+        # Separar por prioridad
+        alta_prioridad = df_review[df_review['prioridad'] == 'ALTA']
+        media_prioridad = df_review[df_review['prioridad'] == 'MEDIA']
+        
+        if len(alta_prioridad) > 0:
+            st.markdown("### Prioridad ALTA - Anomalías Persistentes (>1h)")
+            for _, row in alta_prioridad.iterrows():
+                st.markdown(f"""
+                <div style='background-color: #FFE5E5; padding: 1rem; border-radius: 8px; border-left: 5px solid #DC143C; margin-bottom: 0.5rem;'>
+                    <div style='display: flex; justify-content: space-between; align-items: center;'>
+                        <div>
+                            <strong style='color: #DC143C; font-size: 1.1rem;'>{row['variable']}</strong>
+                            <p style='margin: 0.3rem 0; color: #333333;'>{row['detalle']}</p>
+                        </div>
+                        <div style='text-align: right;'>
+                            <div style='color: #666666; font-size: 0.9rem;'>{row['n_anomalias']} anomalías</div>
+                            <div style='color: #DC143C; font-weight: 600;'>Score: {row['score_maximo']:.1f}</div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        if len(media_prioridad) > 0:
+            st.markdown("### Prioridad MEDIA - Múltiples Anomalías Recientes")
+            for _, row in media_prioridad.head(5).iterrows():
+                st.markdown(f"""
+                <div style='background-color: #FFF5E5; padding: 1rem; border-radius: 8px; border-left: 5px solid #FFA500; margin-bottom: 0.5rem;'>
+                    <div style='display: flex; justify-content: space-between; align-items: center;'>
+                        <div>
+                            <strong style='color: #FFA500; font-size: 1.1rem;'>{row['variable']}</strong>
+                            <p style='margin: 0.3rem 0; color: #333333;'>{row['detalle']}</p>
+                        </div>
+                        <div style='text-align: right;'>
+                            <div style='color: #666666; font-size: 0.9rem;'>{row['n_anomalias']} anomalías</div>
+                            <div style='color: #FFA500; font-weight: 600;'>Score: {row['score_maximo']:.1f}</div>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        st.markdown("---")
     
-    var_plot = None if variable_selected == 'Todas' else variable_selected
-    n_points = int(horas_visualizar * 6)  # Asumiendo datos cada 10 min
-    
-    fig_trend = plot_anomaly_trend(df, variable=var_plot, n_points=n_points)
-    if fig_trend:
-        st.plotly_chart(fig_trend, use_container_width=True)
-    
-    st.markdown("---")
+    # ==========================================
+    # GRÁFICO PRINCIPAL (solo si se selecciona una variable)
+    # ==========================================
+    if variable_selected != 'Todas':
+        st.markdown(f"## Tendencias: {variable_selected}")
+        
+        n_points = int(horas_visualizar * 6)  # Asumiendo datos cada 10 min
+        fig_trend = plot_anomaly_trend(df, variable_selected, n_points=n_points)
+        if fig_trend:
+            st.plotly_chart(fig_trend, use_container_width=True)
+        
+        st.markdown("---")
     
     # ==========================================
     # TOP VARIABLES CON MÁS ANOMALÍAS
@@ -395,48 +505,46 @@ def main():
     with col1:
         st.markdown("### Variables con Más Anomalías (Últimas 24h)")
         
-        # Filtrar últimas 24h
         cutoff_24h = df['ds'].max() - timedelta(hours=24)
         df_24h = df[df['ds'] >= cutoff_24h]
         
-        # Resumen por variable
-        summary = df_24h.groupby('variable').agg({
-            'is_anomaly': ['sum', 'count'],
+        summary = df_24h[df_24h['is_anomaly'] == 1].groupby('variable').agg({
+            'is_anomaly': 'count',
             'anomaly_score': 'mean'
         }).reset_index()
-        summary.columns = ['variable', 'n_anomalias', 'n_total', 'score_promedio']
-        summary['tasa'] = (summary['n_anomalias'] / summary['n_total'] * 100).round(2)
+        summary.columns = ['variable', 'n_anomalias', 'score_promedio']
         summary = summary.sort_values('n_anomalias', ascending=False).head(10)
         
-        # Gráfico de barras
-        fig_bars = go.Figure()
-        fig_bars.add_trace(go.Bar(
-            x=summary['variable'],
-            y=summary['n_anomalias'],
-            marker_color='#DC143C',
-            text=summary['n_anomalias'],
-            textposition='outside',
-            hovertemplate='%{x}<br>Anomalías: %{y}<extra></extra>'
-        ))
-        
-        fig_bars.update_layout(
-            xaxis_title='Variable',
-            yaxis_title='Número de Anomalías',
-            height=300,
-            template='plotly_white',
-            plot_bgcolor='#FFFFFF',
-            paper_bgcolor='#FFFFFF'
-        )
-        
-        st.plotly_chart(fig_bars, use_container_width=True)
+        if len(summary) > 0:
+            fig_bars = go.Figure()
+            fig_bars.add_trace(go.Bar(
+                x=summary['variable'],
+                y=summary['n_anomalias'],
+                marker_color='#DC143C',
+                text=summary['n_anomalias'],
+                textposition='outside',
+                hovertemplate='%{x}<br>Anomalías: %{y}<br>Score promedio: %{customdata:.1f}<extra></extra>',
+                customdata=summary['score_promedio']
+            ))
+            
+            fig_bars.update_layout(
+                xaxis_title='Variable',
+                yaxis_title='Número de Anomalías',
+                height=350,
+                template='plotly_white',
+                plot_bgcolor='#FFFFFF',
+                paper_bgcolor='#FFFFFF'
+            )
+            
+            st.plotly_chart(fig_bars, use_container_width=True)
+        else:
+            st.info("No hay anomalías en las últimas 24 horas")
     
     with col2:
-        st.markdown("### Distribución de Anomalías")
+        st.markdown("### Distribución de Anomalías por Severidad")
         
-        # Distribución por score
         df_anomalies = df[df['is_anomaly'] == 1].copy()
         if len(df_anomalies) > 0:
-            # Categorías de score
             df_anomalies['categoria'] = pd.cut(
                 df_anomalies['anomaly_score'],
                 bins=[0, 50, 75, 100],
@@ -445,7 +553,6 @@ def main():
             
             distrib = df_anomalies['categoria'].value_counts()
             
-            # Gráfico donut
             fig_donut = go.Figure(data=[go.Pie(
                 labels=distrib.index,
                 values=distrib.values,
@@ -456,7 +563,7 @@ def main():
             )])
             
             fig_donut.update_layout(
-                height=300,
+                height=350,
                 template='plotly_white',
                 plot_bgcolor='#FFFFFF',
                 paper_bgcolor='#FFFFFF',
@@ -474,14 +581,12 @@ def main():
     # ==========================================
     st.markdown("### Anomalías Recientes")
     
-    # Filtrar anomalías con score mínimo
     df_anomalies_recent = df[
         (df['is_anomaly'] == 1) & 
         (df['anomaly_score'] >= min_score)
     ].sort_values('ds', ascending=False).head(50)
     
     if len(df_anomalies_recent) > 0:
-        # Seleccionar columnas relevantes
         cols_display = ['ds', 'variable', 'y', 'yhat', 'anomaly_score', 'prediction_error_pct']
         cols_available = [c for c in cols_display if c in df_anomalies_recent.columns]
         
@@ -489,14 +594,9 @@ def main():
         df_display['ds'] = df_display['ds'].dt.strftime('%Y-%m-%d %H:%M:%S')
         
         # Formatear números
-        if 'y' in df_display.columns:
-            df_display['y'] = df_display['y'].round(2)
-        if 'yhat' in df_display.columns:
-            df_display['yhat'] = df_display['yhat'].round(2)
-        if 'anomaly_score' in df_display.columns:
-            df_display['anomaly_score'] = df_display['anomaly_score'].round(1)
-        if 'prediction_error_pct' in df_display.columns:
-            df_display['prediction_error_pct'] = df_display['prediction_error_pct'].round(2)
+        for col in ['y', 'yhat', 'anomaly_score', 'prediction_error_pct']:
+            if col in df_display.columns:
+                df_display[col] = df_display[col].round(2)
         
         st.dataframe(df_display, use_container_width=True, hide_index=True)
     else:
@@ -509,13 +609,11 @@ def main():
     # ==========================================
     if df_metrics is not None:
         with st.expander("Métricas del Modelo por Variable"):
-            # Mostrar métricas principales
             cols_metrics = ['variable', 'mae', 'rmse', 'r2', 'anomaly_rate_pct', 'avg_anomaly_score']
             cols_available = [c for c in cols_metrics if c in df_metrics.columns]
             
             if cols_available:
                 df_metrics_display = df_metrics[cols_available].copy()
-                # Formatear números
                 for col in df_metrics_display.select_dtypes(include=[np.number]).columns:
                     df_metrics_display[col] = df_metrics_display[col].round(3)
                 
@@ -532,4 +630,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
