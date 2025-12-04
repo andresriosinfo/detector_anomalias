@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 # Configuración de la página
 st.set_page_config(
     page_title="Sistema de Detección de Anomalías",
-    page_icon="⚠️",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -209,19 +209,25 @@ def get_variables_to_review(df):
     return pd.DataFrame(review_vars)
 
 
-def plot_anomaly_trend(df, variable, n_points=200, show_title=True):
+def plot_anomaly_trend(df, variable, show_title=True):
     """
-    Gráfico de tendencia con anomalías.
+    Gráfico de tendencia con anomalías - Última hora.
     El intervalo de confianza está alrededor de la predicción (yhat).
     Muestra cómo se detectan las anomalías: valores fuera del intervalo de confianza.
     """
     if variable is None or variable == 'Todas':
         return None
     
-    df_plot = df[df['variable'] == variable].tail(n_points).copy()
+    # Filtrar última hora
+    ultimo_ts = df['ds'].max()
+    cutoff_1h = ultimo_ts - timedelta(hours=1)
+    df_plot = df[(df['variable'] == variable) & (df['ds'] >= cutoff_1h)].copy()
     
     if len(df_plot) == 0:
         return None
+    
+    # Ordenar por fecha
+    df_plot = df_plot.sort_values('ds').reset_index(drop=True)
     
     fig = go.Figure()
     
@@ -244,45 +250,45 @@ def plot_anomaly_trend(df, variable, n_points=200, show_title=True):
         mode='lines',
         name='Intervalo de Confianza (95%)',
         fill='tonexty',
-        fillcolor='rgba(61, 205, 88, 0.15)',
+        fillcolor='rgba(200, 200, 200, 0.1)',
         line=dict(width=0),
         showlegend=True,
         hovertemplate='%{x}<br>Límite Inferior: %{y:.2f}<extra></extra>'
     ))
     
-    # Valor predicho (centro del intervalo) - línea punteada
+    # Valor predicho (centro del intervalo) - gris neutro
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat'],
         mode='lines',
-        name='Valor Predicho (yhat)',
-        line=dict(color='#2E9A42', width=2, dash='dot'),
+        name='Valor Predicho',
+        line=dict(color='#808080', width=2, dash='dot'),
         hovertemplate='%{x}<br>Predicho: %{y:.2f}<extra></extra>'
     ))
     
-    # Líneas de límites para mejor visualización
+    # Líneas de límites para mejor visualización (gris claro)
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
         mode='lines',
         name='Límite Superior',
-        line=dict(color='#2E9A42', width=1, dash='dash'),
-        opacity=0.5,
+        line=dict(color='#B0B0B0', width=1, dash='dash'),
+        opacity=0.6,
         showlegend=True,
         hovertemplate='%{x}<br>Límite Superior: %{y:.2f}<extra></extra>'
     ))
     
-    # Valor real observado
+    # Valor real observado - azul claro
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['y'],
         mode='lines',
-        name='Valor Real (y)',
-        line=dict(color='#3DCD58', width=2),
+        name='Valor Real',
+        line=dict(color='#87CEEB', width=2),
         hovertemplate='%{x}<br>Real: %{y:.2f}<extra></extra>'
     ))
     
-    # Anomalías detectadas (valores reales fuera del intervalo de confianza)
+    # Anomalías detectadas (valores reales fuera del intervalo de confianza) - rojo suave
     anomalias = df_plot[df_plot['is_anomaly'] == 1]
     
     if len(anomalias) > 0:
@@ -296,12 +302,12 @@ def plot_anomaly_trend(df, variable, n_points=200, show_title=True):
                 x=anomalias_arriba['ds'],
                 y=anomalias_arriba['y'],
                 mode='markers',
-                name='Anomalía (Arriba)',
+                name='Anomalía',
                 marker=dict(
-                    color='#DC143C',
+                    color='#FF6B6B',
                     size=10,
                     symbol='triangle-up',
-                    line=dict(width=2, color='white')
+                    line=dict(width=1, color='#CC5555')
                 ),
                 hovertemplate='%{x}<br>Anomalía: %{y:.2f}<br>Límite: %{customdata:.2f}<br>Score: %{text:.1f}<extra></extra>',
                 customdata=anomalias_arriba['yhat_upper'],
@@ -314,16 +320,17 @@ def plot_anomaly_trend(df, variable, n_points=200, show_title=True):
                 x=anomalias_abajo['ds'],
                 y=anomalias_abajo['y'],
                 mode='markers',
-                name='Anomalía (Abajo)',
+                name='Anomalía',
                 marker=dict(
-                    color='#DC143C',
+                    color='#FF6B6B',
                     size=10,
                     symbol='triangle-down',
-                    line=dict(width=2, color='white')
+                    line=dict(width=1, color='#CC5555')
                 ),
                 hovertemplate='%{x}<br>Anomalía: %{y:.2f}<br>Límite: %{customdata:.2f}<br>Score: %{text:.1f}<extra></extra>',
                 customdata=anomalias_abajo['yhat_lower'],
-                text=anomalias_abajo['anomaly_score']
+                text=anomalias_abajo['anomaly_score'],
+                showlegend=False
             ))
     
     # Estadísticas de anomalías para el título
@@ -428,7 +435,7 @@ def main():
         if persistent_count > 0:
             st.markdown(f"""
             <div style='background-color: #DC143C; color: white; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;'>
-                <h3 style='color: white; margin: 0;'>⚠️ ALERTA: {persistent_count} Variable(s) con Anomalías Persistentes (>1h)</h3>
+                <h3 style='color: white; margin: 0;'>ALERTA: {persistent_count} Variable(s) con Anomalías Persistentes (>1h)</h3>
                 <p style='margin: 0.5rem 0 0 0;'>Revisar sección "Variables que Requieren Revisión"</p>
             </div>
             """, unsafe_allow_html=True)
@@ -490,7 +497,7 @@ def main():
     # VARIABLES QUE REQUIEREN REVISIÓN
     # ==========================================
     if len(df_review) > 0:
-        st.markdown("## ⚠️ Variables que Requieren Revisión")
+        st.markdown("## Variables que Requieren Revisión")
         
         # Separar por prioridad
         alta_prioridad = df_review[df_review['prioridad'] == 'ALTA']
@@ -560,8 +567,7 @@ def main():
                 cols = st.columns(n_cols)
             
             with cols[i % n_cols]:
-                n_points = int(horas_visualizar * 6)
-                fig = plot_anomaly_trend(df, var, n_points=n_points, show_title=True)
+                fig = plot_anomaly_trend(df, var, show_title=True)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
         
@@ -572,9 +578,9 @@ def main():
     # ==========================================
     if variable_selected != 'Todas':
         st.markdown(f"## Tendencias: {variable_selected}")
+        st.markdown("*Última hora de datos*")
         
-        n_points = int(horas_visualizar * 6)  # Asumiendo datos cada 10 min
-        fig_trend = plot_anomaly_trend(df, variable_selected, n_points=n_points)
+        fig_trend = plot_anomaly_trend(df, variable_selected, show_title=False)
         if fig_trend:
             st.plotly_chart(fig_trend, use_container_width=True)
         
