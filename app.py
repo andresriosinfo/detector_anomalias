@@ -231,8 +231,9 @@ def plot_anomaly_trend(df, variable, show_title=True):
     
     fig = go.Figure()
     
-    # Intervalo de confianza alrededor de yhat (predicción)
-    # Primero el límite superior (para el fill)
+    # IMPORTANTE: El intervalo de confianza está centrado alrededor de yhat (predicción)
+    # Orden correcto para visualizar el intervalo alrededor de yhat:
+    # 1. Primero el límite superior (invisible, solo para el fill)
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
@@ -243,39 +244,53 @@ def plot_anomaly_trend(df, variable, show_title=True):
         hoverinfo='skip'
     ))
     
-    # Límite inferior con fill
+    # 2. Luego el límite inferior con fill hacia el superior (crea el área sombreada del intervalo)
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_lower'],
         mode='lines',
         name='Intervalo de Confianza (95%)',
-        fill='tonexty',
-        fillcolor='rgba(200, 200, 200, 0.1)',
+        fill='tonexty',  # Rellena hacia la traza anterior (yhat_upper)
+        fillcolor='rgba(200, 200, 200, 0.15)',
         line=dict(width=0),
         showlegend=True,
         hovertemplate='%{x}<br>Límite Inferior: %{y:.2f}<extra></extra>'
     ))
     
-    # Valor predicho (centro del intervalo) - gris neutro
+    # 3. Valor predicho (yhat) - CENTRO del intervalo de confianza - gris neutro
+    # Esta línea está en el medio del intervalo, entre yhat_lower y yhat_upper
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat'],
         mode='lines',
-        name='Valor Predicho',
-        line=dict(color='#808080', width=2, dash='dot'),
+        name='Valor Predicho (yhat)',
+        line=dict(color='#808080', width=2.5, dash='dot'),
         hovertemplate='%{x}<br>Predicho: %{y:.2f}<extra></extra>'
     ))
     
-    # Líneas de límites para mejor visualización (gris claro)
+    # 4. Líneas de límites visibles para mejor visualización (gris claro)
+    # Límite superior visible
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
         mode='lines',
         name='Límite Superior',
         line=dict(color='#B0B0B0', width=1, dash='dash'),
-        opacity=0.6,
+        opacity=0.7,
         showlegend=True,
         hovertemplate='%{x}<br>Límite Superior: %{y:.2f}<extra></extra>'
+    ))
+    
+    # Límite inferior visible
+    fig.add_trace(go.Scatter(
+        x=df_plot['ds'],
+        y=df_plot['yhat_lower'],
+        mode='lines',
+        name='Límite Inferior',
+        line=dict(color='#B0B0B0', width=1, dash='dash'),
+        opacity=0.7,
+        showlegend=True,
+        hovertemplate='%{x}<br>Límite Inferior: %{y:.2f}<extra></extra>'
     ))
     
     # Valor real observado - azul claro
