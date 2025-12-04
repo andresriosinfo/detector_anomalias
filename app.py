@@ -232,63 +232,65 @@ def plot_anomaly_trend(df, variable, show_title=True):
     fig = go.Figure()
     
     # IMPORTANTE: El intervalo de confianza está centrado alrededor de yhat (predicción)
-    # Orden correcto para visualizar el intervalo alrededor de yhat:
-    # 1. Primero el límite superior (invisible, solo para el fill)
+    # yhat_lower < yhat < yhat_upper
+    # El área sombreada debe mostrar el intervalo alrededor de yhat
+    
+    # 1. Primero dibujamos el límite SUPERIOR (invisible, solo para crear el área)
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
         mode='lines',
-        name='Límite Superior',
+        name='_upper_invisible',
         line=dict(width=0),
         showlegend=False,
         hoverinfo='skip'
     ))
     
-    # 2. Luego el límite inferior con fill hacia el superior (crea el área sombreada del intervalo)
+    # 2. Luego el límite INFERIOR con fill='tonexty' (rellena hacia arriba hasta yhat_upper)
+    # Esto crea el área sombreada del intervalo de confianza
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_lower'],
         mode='lines',
         name='Intervalo de Confianza (95%)',
         fill='tonexty',  # Rellena hacia la traza anterior (yhat_upper)
-        fillcolor='rgba(200, 200, 200, 0.15)',
+        fillcolor='rgba(200, 200, 200, 0.2)',
         line=dict(width=0),
         showlegend=True,
-        hovertemplate='%{x}<br>Límite Inferior: %{y:.2f}<extra></extra>'
+        hovertemplate='%{x}<br>Intervalo: [%{y:.2f}, %{customdata:.2f}]<extra></extra>',
+        customdata=df_plot['yhat_upper']
     ))
     
-    # 3. Valor predicho (yhat) - CENTRO del intervalo de confianza - gris neutro
-    # Esta línea está en el medio del intervalo, entre yhat_lower y yhat_upper
+    # 3. Ahora dibujamos yhat (predicción) - debe estar VISUALMENTE en el centro del área sombreada
+    # Esta línea va en el medio del intervalo yhat_lower < yhat < yhat_upper
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat'],
         mode='lines',
         name='Valor Predicho (yhat)',
-        line=dict(color='#808080', width=2.5, dash='dot'),
+        line=dict(color='#808080', width=3, dash='dot'),
         hovertemplate='%{x}<br>Predicho: %{y:.2f}<extra></extra>'
     ))
     
-    # 4. Líneas de límites visibles para mejor visualización (gris claro)
-    # Límite superior visible
+    # 4. Líneas de límites visibles (gris claro, punteadas) para ver los bordes del intervalo
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
         mode='lines',
         name='Límite Superior',
-        line=dict(color='#B0B0B0', width=1, dash='dash'),
-        opacity=0.7,
+        line=dict(color='#B0B0B0', width=1.5, dash='dash'),
+        opacity=0.8,
         showlegend=True,
         hovertemplate='%{x}<br>Límite Superior: %{y:.2f}<extra></extra>'
     ))
     
-    # Límite inferior visible
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_lower'],
         mode='lines',
         name='Límite Inferior',
-        line=dict(color='#B0B0B0', width=1, dash='dash'),
-        opacity=0.7,
+        line=dict(color='#B0B0B0', width=1.5, dash='dash'),
+        opacity=0.8,
         showlegend=True,
         hovertemplate='%{x}<br>Límite Inferior: %{y:.2f}<extra></extra>'
     ))
