@@ -229,19 +229,27 @@ def plot_anomaly_trend(df, variable, show_title=True):
     # Ordenar por fecha
     df_plot = df_plot.sort_values('ds').reset_index(drop=True)
     
+    # CORRECCIÓN: Calcular límites simétricos alrededor de yhat
+    # Calculamos un margen fijo basado en el promedio de las distancias desde yhat
+    # Esto asegura que el intervalo esté perfectamente centrado alrededor de yhat
+    margen_superior = (df_plot['yhat_upper'] - df_plot['yhat']).abs()
+    margen_inferior = (df_plot['yhat'] - df_plot['yhat_lower']).abs()
+    margen_promedio = ((margen_superior + margen_inferior) / 2).mean()
+    
+    # Si el margen promedio es muy pequeño o cero, usar un porcentaje del valor promedio de yhat
+    if margen_promedio < 0.01:
+        margen_promedio = abs(df_plot['yhat'].mean()) * 0.1  # 10% del valor promedio
+    
+    # Crear límites simétricos alrededor de yhat
+    df_plot['yhat_upper_sym'] = df_plot['yhat'] + margen_promedio
+    df_plot['yhat_lower_sym'] = df_plot['yhat'] - margen_promedio
+    
     fig = go.Figure()
     
-    # SOLUCIÓN EXPLÍCITA: Crear el intervalo de confianza alrededor de yhat
-    # El intervalo está definido por yhat_lower e yhat_upper, y yhat está en el centro
-    # Vamos a crear el área sombreada de forma explícita y clara
-    
-    # PASO 1: Crear el área sombreada del intervalo de confianza
-    # Combinamos yhat_upper e yhat_lower en una sola forma cerrada para el fill
-    # Primero vamos hacia adelante con yhat_upper, luego hacia atrás con yhat_lower
-    
-    # Crear puntos para el área sombreada (polígono cerrado)
+    # PASO 1: Crear el área sombreada del intervalo de confianza (simétrico alrededor de yhat)
+    # Combinamos yhat_upper_sym e yhat_lower_sym en una sola forma cerrada para el fill
     x_fill = list(df_plot['ds']) + list(df_plot['ds'][::-1])  # Adelante y atrás
-    y_fill = list(df_plot['yhat_upper']) + list(df_plot['yhat_lower'][::-1])  # Superior y luego inferior invertido
+    y_fill = list(df_plot['yhat_upper_sym']) + list(df_plot['yhat_lower_sym'][::-1])  # Superior y luego inferior invertido
     
     # Área sombreada del intervalo de confianza
     fig.add_trace(go.Scatter(
@@ -268,7 +276,7 @@ def plot_anomaly_trend(df, variable, show_title=True):
     # PASO 3: Líneas de límites VISIBLES (gris claro, punteadas) para ver los bordes
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
-        y=df_plot['yhat_upper'],
+        y=df_plot['yhat_upper_sym'],
         mode='lines',
         name='Límite Superior',
         line=dict(color='#B0B0B0', width=1.5, dash='dash'),
@@ -279,7 +287,7 @@ def plot_anomaly_trend(df, variable, show_title=True):
     
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
-        y=df_plot['yhat_lower'],
+        y=df_plot['yhat_lower_sym'],
         mode='lines',
         name='Límite Inferior',
         line=dict(color='#B0B0B0', width=1.5, dash='dash'),
@@ -299,12 +307,13 @@ def plot_anomaly_trend(df, variable, show_title=True):
     ))
     
     # Anomalías detectadas (valores reales fuera del intervalo de confianza) - rojo suave
+    # Usar los límites simétricos para detectar anomalías visualmente
     anomalias = df_plot[df_plot['is_anomaly'] == 1]
     
     if len(anomalias) > 0:
-        # Separar anomalías por tipo: fuera del intervalo
-        anomalias_arriba = anomalias[anomalias['y'] > anomalias['yhat_upper']]
-        anomalias_abajo = anomalias[anomalias['y'] < anomalias['yhat_lower']]
+        # Separar anomalías por tipo: fuera del intervalo simétrico
+        anomalias_arriba = anomalias[anomalias['y'] > anomalias['yhat_upper_sym']]
+        anomalias_abajo = anomalias[anomalias['y'] < anomalias['yhat_lower_sym']]
         
         # Anomalías por encima del límite superior
         if len(anomalias_arriba) > 0:
@@ -320,7 +329,7 @@ def plot_anomaly_trend(df, variable, show_title=True):
                     line=dict(width=1, color='#CC5555')
                 ),
                 hovertemplate='%{x}<br>Anomalía: %{y:.2f}<br>Límite: %{customdata:.2f}<br>Score: %{text:.1f}<extra></extra>',
-                customdata=anomalias_arriba['yhat_upper'],
+                customdata=anomalias_arriba['yhat_upper_sym'],
                 text=anomalias_arriba['anomaly_score']
             ))
         
@@ -338,7 +347,7 @@ def plot_anomaly_trend(df, variable, show_title=True):
                     line=dict(width=1, color='#CC5555')
                 ),
                 hovertemplate='%{x}<br>Anomalía: %{y:.2f}<br>Límite: %{customdata:.2f}<br>Score: %{text:.1f}<extra></extra>',
-                customdata=anomalias_abajo['yhat_lower'],
+                customdata=anomalias_abajo['yhat_lower_sym'],
                 text=anomalias_abajo['anomaly_score'],
                 showlegend=False
             ))
