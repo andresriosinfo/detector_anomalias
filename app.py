@@ -231,40 +231,31 @@ def plot_anomaly_trend(df, variable, show_title=True):
     
     fig = go.Figure()
     
-    # IMPORTANTE: El intervalo de confianza está centrado alrededor de yhat (predicción)
-    # Estructura: yhat_lower < yhat < yhat_upper
-    # Para crear el área sombreada correctamente, usamos el orden correcto de trazas
+    # SOLUCIÓN EXPLÍCITA: Crear el intervalo de confianza alrededor de yhat
+    # El intervalo está definido por yhat_lower e yhat_upper, y yhat está en el centro
+    # Vamos a crear el área sombreada de forma explícita y clara
     
-    # 1. PRIMERO: Límite SUPERIOR (invisible, solo para crear el área)
+    # PASO 1: Crear el área sombreada del intervalo de confianza
+    # Combinamos yhat_upper e yhat_lower en una sola forma cerrada para el fill
+    # Primero vamos hacia adelante con yhat_upper, luego hacia atrás con yhat_lower
+    
+    # Crear puntos para el área sombreada (polígono cerrado)
+    x_fill = list(df_plot['ds']) + list(df_plot['ds'][::-1])  # Adelante y atrás
+    y_fill = list(df_plot['yhat_upper']) + list(df_plot['yhat_lower'][::-1])  # Superior y luego inferior invertido
+    
+    # Área sombreada del intervalo de confianza
     fig.add_trace(go.Scatter(
-        x=df_plot['ds'],
-        y=df_plot['yhat_upper'],
-        mode='lines',
-        name='_upper_bound',
+        x=x_fill,
+        y=y_fill,
+        fill='toself',
+        fillcolor='rgba(200, 200, 200, 0.3)',
         line=dict(width=0),
-        showlegend=False,
+        name='Intervalo de Confianza (95%)',
+        showlegend=True,
         hoverinfo='skip'
     ))
     
-    # 2. SEGUNDO: Límite INFERIOR con fill='tonexty' 
-    # Esto rellena desde yhat_lower hacia arriba hasta yhat_upper
-    # Creando el área sombreada del intervalo de confianza alrededor de yhat
-    fig.add_trace(go.Scatter(
-        x=df_plot['ds'],
-        y=df_plot['yhat_lower'],
-        mode='lines',
-        name='Intervalo de Confianza (95%)',
-        fill='tonexty',  # Rellena hacia la traza anterior (yhat_upper)
-        fillcolor='rgba(200, 200, 200, 0.3)',
-        line=dict(width=0),
-        showlegend=True,
-        hovertemplate='%{x}<br>Intervalo: [%{y:.2f}, %{customdata:.2f}]<extra></extra>',
-        customdata=df_plot['yhat_upper']
-    ))
-    
-    # 3. TERCERO: yhat (PREDICCIÓN) - se dibuja DESPUÉS del área sombreada
-    # Debe estar VISUALMENTE en el CENTRO del área sombreada
-    # Esta línea va en el medio: yhat_lower < yhat < yhat_upper
+    # PASO 2: Dibujar yhat (PREDICCIÓN) - debe estar VISIBLE en el centro del área sombreada
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat'],
@@ -274,8 +265,7 @@ def plot_anomaly_trend(df, variable, show_title=True):
         hovertemplate='%{x}<br>Predicho: %{y:.2f}<extra></extra>'
     ))
     
-    # 4. CUARTO: Líneas de límites VISIBLES (gris claro, punteadas)
-    # Para ver claramente los bordes del intervalo
+    # PASO 3: Líneas de límites VISIBLES (gris claro, punteadas) para ver los bordes
     fig.add_trace(go.Scatter(
         x=df_plot['ds'],
         y=df_plot['yhat_upper'],
